@@ -1,0 +1,12 @@
+_build/
+_tests/
+_opam/
+var/
+
+*~
+\.\#*
+\#*#
+*.native
+*.byte
+*.install
+.merlin

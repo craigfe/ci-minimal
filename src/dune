@@ -1,0 +1,10 @@
+(executable
+ (public_name ci_minimal)
+ (name main)
+ (libraries current.fs
+            current_docker
+            current_git
+            current_web
+            cmdliner
+            logs.fmt
+            fmt.tty))
