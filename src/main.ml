@@ -2,9 +2,10 @@ open Current.Syntax
 module Git = Current_git
 module Docker = Current_docker.Default
 
-let () = Logging.init ~level:Logs.Debug ()
+let () = Logging.init ()
 
-let dockerfile ~base ~ocaml_version =
+(* Dockerfiles *)
+let dockerfile_project ~base ~ocaml_version =
   let open Dockerfile in
   from (Docker.Image.hash base)
   @@ run "opam switch %s" ocaml_version
@@ -15,23 +16,48 @@ let dockerfile ~base ~ocaml_version =
        "opam install . --show-actions --deps-only -t | awk '/- install/{print \
         $3}' | xargs opam depext -iy"
   @@ copy ~src:[ "." ] ~dst:"/src/" ()
-  @@ run "opam install -tv ."
 
+let dockerfile_format ~base ~ocaml_version ~ocamlformat_version =
+  let open Dockerfile in
+  from (Docker.Image.hash base)
+  @@ user "opam" @@ workdir "/home/opam/src"
+  @@ run "opam switch %s" ocaml_version
+  (* @@ run "git -C /home/opam/opam-repository pull" *)
+  @@ run "opam depext ocamlformat=%s" ocamlformat_version
+  @@ run "opam install ocamlformat=%s" ocamlformat_version
+
+(* Pipeline stages *)
+let build ~src ~ocaml_version base =
+  let dockerfile =
+    let+ base = base in
+    dockerfile_project ~base ~ocaml_version
+  in
+  Docker.build ~label:"dependencies" ~pull:true ~dockerfile (`Git src)
+
+let test (img : Docker.Image.t Current.t) =
+  Docker.run img ~args:[ "opam"; "install"; "-tv"; "." ]
+
+let format (base : Docker.Image.t Current.t) ~ocamlformat_version
+    ~ocaml_version =
+  let dockerfile =
+    let+ base = base in
+    dockerfile_format ~base ~ocaml_version ~ocamlformat_version
+  in
+  let img = Docker.build ~label:"lint" ~pull:false ~dockerfile `No_context in
+  Docker.run img ~args:[ "dune"; "build"; "@fmt" ]
+
+(* Main pipeline*)
 let weekly = Current_cache.Schedule.v ~valid_for:(Duration.of_day 7) ()
 
-(* Run "docker build" on the latest commit in Git repository [repo]. *)
 let pipeline ~repo () =
   let src = Git.Local.head_commit repo in
-  let base = Docker.pull ~schedule:weekly "ocaml/opam2" in
-  let build ocaml_version =
-    let dockerfile =
-      let+ base = base in
-      dockerfile ~base ~ocaml_version
-    in
-    Docker.build ~label:ocaml_version ~pull:false ~dockerfile (`Git src)
-    |> Docker.tag ~tag:(Fmt.strf "example-%s" ocaml_version)
-  in
-  Current.all [ build "4.07"; build "4.08" ]
+  let opam_base = Docker.pull ~schedule:weekly "ocaml/opam2" in
+  let img = build ~src ~ocaml_version:"4.08" opam_base in
+  Current.all
+    [
+      test img;
+      format img ~ocaml_version:"4.08" ~ocamlformat_version:"0.11.0";
+    ]
 
 let main config mode repo =
   let repo = Git.Local.v (Fpath.v repo) in
